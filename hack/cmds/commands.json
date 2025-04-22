@@ -1352,6 +1352,69 @@
     "since": "8.0.0",
     "group": "cluster"
   },
+  "CLUSTER IMPORT": {
+    "summary": "Import a cluster configuration from a file or manage slot migrations",
+    "complexity": "O(N) where N is the number of nodes or slots involved",
+    "arguments": [
+      {
+        "name": "subcommand",
+        "type": "enum",
+        "enum": [
+          "SLOTSRANGE",
+          "IMPORT-PREPARE",
+          "IMPORT-COMMIT",
+          "IMPORT-CANCEL"
+        ]
+      },
+      {
+        "name": "slotsrange",
+        "type": "block",
+        "optional": true,
+        "block": [
+          {
+            "name": "start",
+            "type": "integer"
+          },
+          {
+            "name": "end",
+            "type": "integer"
+          },
+          {
+            "name": "additional_ranges",
+            "type": "block",
+            "optional": true,
+            "multiple": true,
+            "block": [
+              {
+                "name": "start",
+                "type": "integer"
+              },
+              {
+                "name": "end",
+                "type": "integer"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "linkname",
+        "type": "string",
+        "optional": true
+      },
+      {
+        "name": "all",
+        "type": "enum",
+        "enum": [
+          "ALL"
+        ],
+        "optional": true
+      }
+    ],
+    "since": "8.0.0",
+    "group": "cluster"
+  },
+
   "COMMAND COUNT": {
     "summary": "Get total number of Valkey commands",
     "complexity": "O(1)",
