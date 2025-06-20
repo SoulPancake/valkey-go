@@ -275,6 +275,8 @@ type StandaloneOption struct {
 	// Note that these addresses must be online and cannot be promoted.
 	// An example use case is the reader endpoint provided by cloud vendors.
 	ReplicaAddress []string
+	// SendToReplicas is a function that returns true if the command should be sent to replicas.
+	EnableRedirect bool
 }
 
 // ReplicaInfo is the information of a replica node in a valkey cluster.

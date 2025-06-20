@@ -3,6 +3,7 @@ package valkey
 import (
 	"context"
 	"io"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -10,13 +11,17 @@ import (
 )
 
 type singleClient struct {
-	conn         conn
-	retryHandler retryHandler
-	stop         uint32
-	cmd          Builder
-	retry        bool
-	hasLftm      bool
-	DisableCache bool
+	conn           conn
+	retryHandler   retryHandler
+	enableRedirect bool
+	stop           uint32
+	cmd            Builder
+	retry          bool
+	hasLftm        bool
+	DisableCache   bool
+
+	connFn connFn        // NEW: store connFn so we can reconnect
+	opt    *ClientOption // NEW: store opt so we can reuse connection options
 }
 
 func newSingleClient(opt *ClientOption, prev conn, connFn connFn, retryer retryHandler) (*singleClient, error) {
@@ -52,6 +57,16 @@ retry:
 		if err == errConnExpired {
 			goto retry
 		}
+		if isRedirectError(err) {
+			// parse host:port from error
+			host, port := parseRedirectTarget(err.Error())
+			if host != "" && port != "" {
+				if c.reconnectTo(host, port) == nil {
+					goto retry
+				}
+			}
+			// fallthrough — return redirect error if reconnect failed
+		}
 		if c.retry && cmd.IsReadOnly() && c.isRetryable(err, ctx) {
 			if c.retryHandler.WaitOrSkipRetry(ctx, attempts, cmd, err) {
 				attempts++
@@ -59,7 +74,7 @@ retry:
 			}
 		}
 	}
-	if resp.NonValkeyError() == nil { // not recycle cmds if error, since cmds may be used later in the pipe.
+	if resp.NonValkeyError() == nil {
 		cmds.PutCompleted(cmd)
 	}
 	return resp
@@ -409,4 +424,36 @@ func chooseSlot(multi []Completed) uint16 {
 		}
 	}
 	return cmds.InitSlot
+}
+
+func isRedirectError(err error) bool {
+	return strings.HasPrefix(err.Error(), "REDIRECT ")
+}
+
+func parseRedirectTarget(msg string) (string, string) {
+	parts := strings.Fields(msg)
+	if len(parts) < 2 {
+		return "", ""
+	}
+	hostPort := strings.Split(parts[1], ":")
+	if len(hostPort) != 2 {
+		return "", ""
+	}
+	return hostPort[0], hostPort[1]
+}
+
+func (s *singleClient) reconnectTo(host, port string) error {
+	s.conn.Close()
+	newConn := s.connFn(host+":"+port, s.opt) // you'd store connFn and opt in singleClient
+	if err := newConn.Dial(); err != nil {
+		return err
+	}
+	if s.enableRedirect { // you'd add enableRedirect field to singleClient
+		if err := sendClientCapa(newConn); err != nil {
+			newConn.Close()
+			return err
+		}
+	}
+	s.conn = newConn
+	return nil
 }

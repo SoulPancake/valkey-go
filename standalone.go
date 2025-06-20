@@ -16,6 +16,12 @@ func newStandaloneClient(opt *ClientOption, connFn connFn, retryer retryHandler)
 	if err := p.Dial(); err != nil {
 		return nil, err
 	}
+	if opt.Standalone.EnableRedirect {
+		if err := sendClientCapa(p); err != nil {
+			p.Close()
+			return nil, err
+		}
+	}
 	s := &standalone{
 		toReplicas: opt.SendToReplicas,
 		primary:    newSingleClientWithConn(p, cmds.NewBuilder(cmds.NoSlot), !opt.DisableRetry, opt.DisableCache, retryer, false),
@@ -140,4 +146,11 @@ func (s *standalone) Nodes() map[string]Client {
 
 func (s *standalone) Mode() ClientMode {
 	return ClientModeStandalone
+}
+
+func sendClientCapa(c conn) error {
+	ctx := context.Background()
+	cmd := cmds.NewCompleted([]string{"CLIENT", "CAPA", "redirect"})
+	resp := c.Do(ctx, cmd)
+	return resp.Error()
 }
