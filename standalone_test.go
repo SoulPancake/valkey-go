@@ -30,6 +30,22 @@ func TestNewStandaloneClientError(t *testing.T) {
 	}
 }
 
+func TestNewStandaloneClientEnableRedirectReplicaAddressConflict(t *testing.T) {
+	defer ShouldNotLeak(SetupLeakDetection())
+	_, err := newStandaloneClient(
+		&ClientOption{
+			InitAddress: []string{"primary"},
+			Standalone: StandaloneOption{
+				EnableRedirect: true,
+				ReplicaAddress: []string{"replica"},
+			},
+		}, func(dst string, opt *ClientOption) conn { return &mockConn{} }, newRetryer(defaultRetryDelayFn),
+	)
+	if err == nil || err.Error() != "EnableRedirect and ReplicaAddress cannot be used together" {
+		t.Fatalf("expected conflict error, got %v", err)
+	}
+}
+
 func TestNewStandaloneClientReplicasError(t *testing.T) {
 	defer ShouldNotLeak(SetupLeakDetection())
 	v := errors.New("dial err")
@@ -339,5 +355,36 @@ func TestStandaloneRedirectDisabled(t *testing.T) {
 	
 	if result.Error().Error() != "REDIRECT 127.0.0.1:6380" {
 		t.Errorf("expected redirect error, got: %v", result.Error())
+	}
+}
+
+func TestNewClientEnableRedirectPriority(t *testing.T) {
+	defer ShouldNotLeak(SetupLeakDetection())
+	
+	// Test that EnableRedirect creates a standalone client
+	s, err := newStandaloneClient(&ClientOption{
+		InitAddress: []string{"primary"},
+		Standalone: StandaloneOption{
+			EnableRedirect: true,
+		},
+	}, func(dst string, opt *ClientOption) conn {
+		return &mockConn{
+			DialFn: func() error { return nil },
+		}
+	}, newRetryer(defaultRetryDelayFn))
+	
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer s.Close()
+	
+	// Verify that we got a standalone client with redirect enabled
+	if s.Mode() != ClientModeStandalone {
+		t.Errorf("expected standalone client, got: %v", s.Mode())
+	}
+	
+	// Verify that EnableRedirect is properly configured
+	if !s.enableRedirect {
+		t.Error("expected EnableRedirect to be true")
 	}
 }
