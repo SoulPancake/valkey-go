@@ -274,6 +274,14 @@ type StandaloneOption struct {
 	// Note that these addresses must be online and cannot be promoted.
 	// An example use case is the reader endpoint provided by cloud vendors.
 	ReplicaAddress []string
+
+	// EnableRedirect enables handling of MOVED and ASK redirects for standalone clients.
+	// When enabled, the client will automatically follow redirects by swapping the primary connection.
+	EnableRedirect bool
+
+	// RedirectRetryLimit sets the maximum number of redirect retries when the primary connection
+	// returns another redirect error after being updated. Default is 3 if not set when EnableRedirect is true.
+	RedirectRetryLimit int
 }
 
 // ReplicaInfo is the information of a replica node in a valkey cluster.
