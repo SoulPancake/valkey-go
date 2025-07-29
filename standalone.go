@@ -22,6 +22,7 @@ func newStandaloneClient(opt *ClientOption, connFn connFn, retryer retryHandler)
 		primary:        newSingleClientWithConn(p, cmds.NewBuilder(cmds.NoSlot), !opt.DisableRetry, opt.DisableCache, retryer, false),
 		replicas:       make([]*singleClient, len(opt.Standalone.ReplicaAddress)),
 		enableRedirect: opt.Standalone.EnableRedirect,
+		enableRetry:    !opt.DisableRetry,
 		connFn:         connFn,
 		opt:            opt,
 		retryer:        retryer,
@@ -46,6 +47,7 @@ type standalone struct {
 	primary        *singleClient
 	replicas       []*singleClient
 	enableRedirect bool
+	enableRetry    bool
 	connFn         connFn
 	opt            *ClientOption
 	retryer        retryHandler
@@ -70,16 +72,44 @@ func (s *standalone) handleRedirect(ctx context.Context, cmd Completed, result V
 
 	if ret, yes := IsValkeyErr(result.Error()); yes {
 		if addr, ok := ret.IsRedirect(); ok {
-			// Use singleflight to ensure only one redirect operation happens at a time
-			if err := s.redirectCall.Do(ctx, func() error {
-				return s.redirectToPrimary(addr)
-			}); err != nil {
-				// If redirect fails, return the original result
-				return result
+			// If retry is disabled, try redirect only once
+			if !s.enableRetry {
+				// Use singleflight to ensure only one redirect operation happens at a time
+				if err := s.redirectCall.Do(ctx, func() error {
+					return s.redirectToPrimary(addr)
+				}); err != nil {
+					// If redirect fails, return the original result
+					return result
+				}
+
+				// Execute the command on the updated primary
+				return s.primary.Do(ctx, cmd)
 			}
 
-			// Execute the command on the updated primary
-			return s.primary.Do(ctx, cmd)
+			// Use the existing retryHandler and continue retrying until the context deadline is reached
+			// This provides consistent retry behavior with exponential backoff and respects context deadlines
+			attempts := 1
+			for {
+				// Use singleflight to ensure only one redirect operation happens at a time
+				err := s.redirectCall.Do(ctx, func() error {
+					return s.redirectToPrimary(addr)
+				})
+				
+				if err == nil {
+					// Redirect succeeded, execute the command on the updated primary
+					return s.primary.Do(ctx, cmd)
+				}
+
+				// Check if we should retry the redirect using retryHandler
+				// This respects context deadlines and applies exponential backoff
+				shouldRetry := s.retryer.WaitOrSkipRetry(ctx, attempts, cmd, err)
+				if !shouldRetry {
+					// Context deadline exceeded or retry delay indicates no retry, return original result
+					return result
+				}
+
+				attempts++
+			}
 		}
 	}
 
@@ -176,16 +206,42 @@ func (s *standalone) DoStream(ctx context.Context, cmd Completed) ValkeyResultSt
 	if s.enableRedirect && stream.Error() != nil {
 		if ret, yes := IsValkeyErr(stream.Error()); yes {
 			if addr, ok := ret.IsRedirect(); ok {
-				// Use singleflight to ensure only one redirect operation happens at a time
-				if err := s.redirectCall.Do(ctx, func() error {
-					return s.redirectToPrimary(addr)
-				}); err != nil {
-					// If redirect fails, return the original stream
-					return stream
+				// If retry is disabled, try redirect only once
+				if !s.enableRetry {
+					// Use singleflight to ensure only one redirect operation happens at a time
+					if err := s.redirectCall.Do(ctx, func() error {
+						return s.redirectToPrimary(addr)
+					}); err != nil {
+						// If redirect fails, return the original stream
+						return stream
+					}
+
+					// Execute the command on the updated primary
+					return s.primary.DoStream(ctx, cmd)
 				}
 
-				// Execute the command on the updated primary
-				return s.primary.DoStream(ctx, cmd)
+				// Retry redirect operation using retryHandler until context deadline
+				attempts := 1
+				for {
+					// Use singleflight to ensure only one redirect operation happens at a time
+					err := s.redirectCall.Do(ctx, func() error {
+						return s.redirectToPrimary(addr)
+					})
+					
+					if err == nil {
+						// Redirect succeeded, execute the command on the updated primary
+						return s.primary.DoStream(ctx, cmd)
+					}
+
+					// Check if we should retry the redirect using retryHandler
+					shouldRetry := s.retryer.WaitOrSkipRetry(ctx, attempts, cmd, err)
+					if !shouldRetry {
+						// Retry limit reached or context deadline exceeded, return original stream
+						return stream
+					}
+
+					attempts++
+				}
 			}
 		}
 	}
@@ -212,16 +268,48 @@ func (s *standalone) DoMultiStream(ctx context.Context, multi ...Completed) Mult
 	if s.enableRedirect && stream.Error() != nil {
 		if ret, yes := IsValkeyErr(stream.Error()); yes {
 			if addr, ok := ret.IsRedirect(); ok {
-				// Use singleflight to ensure only one redirect operation happens at a time
-				if err := s.redirectCall.Do(ctx, func() error {
-					return s.redirectToPrimary(addr)
-				}); err != nil {
-					// If redirect fails, return the original stream
-					return stream
+				// If retry is disabled, try redirect only once
+				if !s.enableRetry {
+					// Use singleflight to ensure only one redirect operation happens at a time
+					if err := s.redirectCall.Do(ctx, func() error {
+						return s.redirectToPrimary(addr)
+					}); err != nil {
+						// If redirect fails, return the original stream
+						return stream
+					}
+
+					// Execute the command on the updated primary
+					return s.primary.DoMultiStream(ctx, multi...)
 				}
 
-				// Execute the command on the updated primary
-				return s.primary.DoMultiStream(ctx, multi...)
+				// Retry redirect operation using retryHandler until context deadline
+				attempts := 1
+				for {
+					// Use singleflight to ensure only one redirect operation happens at a time
+					err := s.redirectCall.Do(ctx, func() error {
+						return s.redirectToPrimary(addr)
+					})
+					
+					if err == nil {
+						// Redirect succeeded, execute the command on the updated primary
+						return s.primary.DoMultiStream(ctx, multi...)
+					}
+
+					// Check if we should retry the redirect using retryHandler
+					// Use the first command from multi for retry decision
+					cmd := multi[0]
+					if len(multi) == 0 {
+						// If no commands, create a dummy command for retry logic
+						cmd = Completed{}
+					}
+					shouldRetry := s.retryer.WaitOrSkipRetry(ctx, attempts, cmd, err)
+					if !shouldRetry {
+						// Retry limit reached or context deadline exceeded, return original stream
+						return stream
+					}
+
+					attempts++
+				}
 			}
 		}
 	}

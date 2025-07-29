@@ -277,6 +277,11 @@ type StandaloneOption struct {
 	// EnableRedirect enables the CLIENT CAPA redirect feature for Valkey 8+
 	// When enabled, the client will send CLIENT CAPA redirect during connection
 	// initialization and handle REDIRECT responses from the server.
+	// 
+	// Redirect error handling uses the existing retryHandler and continues to retry
+	// until the context deadline is reached, providing consistent retry behavior
+	// with exponential backoff. If DisableRetry is true, redirects are attempted
+	// only once without retries.
 	EnableRedirect bool
 }
 
