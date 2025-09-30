@@ -414,14 +414,14 @@ func TestStandaloneClient(t *testing.T) {
 	defer rln.Close()
 
 	var wg sync.WaitGroup
-	primaryMockServer := func(ln net.Listener) {
+	mockServer := func(ln net.Listener) {
 		defer wg.Done()
 		mock, err := accept(t, ln)
 		if err != nil {
 			return
 		}
-		// Handle the initialization sequence for primary (RESP2 with DisableCache=true)
-		mock.Expect("HELLO", "2").
+		// Handle RESP3 initialization sequence
+		mock.Expect("HELLO", "3").
 			Reply(slicemsg(
 				'%',
 				[]ValkeyMessage{
@@ -431,31 +431,8 @@ func TestStandaloneClient(t *testing.T) {
 					strmsg('+', "6.2.0"),
 				},
 			))
-		mock.Expect("CLIENT", "SETINFO", "LIB-NAME", LibName).
-			ReplyError("UNKNOWN COMMAND")
-		mock.Expect("CLIENT", "SETINFO", "LIB-VER", LibVer).
-			ReplyError("UNKNOWN COMMAND")
-		mock.Expect("PING").ReplyString("OK")
-		mock.Close()
-	}
-	replicaMockServer := func(ln net.Listener) {
-		defer wg.Done()
-		mock, err := accept(t, ln)
-		if err != nil {
-			return
-		}
-		// Handle the initialization sequence for replica (RESP2 with DisableCache=true + READONLY)
-		mock.Expect("HELLO", "2").
-			Reply(slicemsg(
-				'%',
-				[]ValkeyMessage{
-					strmsg('+', "server"),
-					strmsg('+', "valkey"),
-					strmsg('+', "version"),
-					strmsg('+', "6.2.0"),
-				},
-			))
-		mock.Expect("READONLY").ReplyString("OK")
+		mock.Expect("CLIENT", "TRACKING", "ON", "OPTIN").
+			ReplyString("OK")
 		mock.Expect("CLIENT", "SETINFO", "LIB-NAME", LibName).
 			ReplyError("UNKNOWN COMMAND")
 		mock.Expect("CLIENT", "SETINFO", "LIB-VER", LibVer).
@@ -464,8 +441,8 @@ func TestStandaloneClient(t *testing.T) {
 		mock.Close()
 	}
 	wg.Add(2)
-	go primaryMockServer(pln)
-	go replicaMockServer(rln)
+	go mockServer(pln)
+	go mockServer(rln)
 
 	_, pport, _ := net.SplitHostPort(pln.Addr().String())
 	_, rport, _ := net.SplitHostPort(rln.Addr().String())
@@ -477,8 +454,6 @@ func TestStandaloneClient(t *testing.T) {
 		SendToReplicas: func(cmd Completed) bool {
 			return cmd.IsReadOnly()
 		},
-		DisableCache: true, // Disable cache to simplify initialization
-		AlwaysRESP2:  true, // Force RESP2 to see if that helps
 	})
 	if err != nil {
 		t.Fatal(err)
