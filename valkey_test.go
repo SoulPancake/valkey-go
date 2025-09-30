@@ -15,6 +15,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -400,11 +401,98 @@ func TestStandaloneClientWithNoSendToReplicas(t *testing.T) {
 }
 
 func TestStandaloneClient(t *testing.T) {
-	// TEMPORARY: Skip this test due to critical serialization bug in message handling
-	// The "client capa redirect impl" commit introduced a bug where ValkeyMessage structures
-	// are corrupted during parsing, causing this test to fail with malformed command data.
-	// This needs to be fixed in the core implementation.
-	t.Skip("Skipping due to critical bug in message serialization - see GitHub issue")
+	defer ShouldNotLeak(SetupLeakDetection())
+	pln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pln.Close()
+	rln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rln.Close()
+
+	var wg sync.WaitGroup
+	// Primary connection mock (no READONLY command)
+	primaryMockServer := func(ln net.Listener) {
+		defer wg.Done()
+		mock, err := accept(t, ln)
+		if err != nil {
+			return
+		}
+		// Handle complete initialization sequence matching pipe tests
+		mock.Expect("HELLO", "3").
+			Reply(slicemsg(
+				'%',
+				[]ValkeyMessage{
+					strmsg('+', "version"),
+					strmsg('+', "6.0.0"),
+					strmsg('+', "proto"),
+					{typ: ':', intlen: 3},
+				},
+			))
+		mock.Expect("CLIENT", "TRACKING", "ON", "OPTIN").
+			ReplyString("OK")
+		mock.Expect("CLIENT", "SETINFO", "LIB-NAME", LibName).
+			ReplyError("UNKNOWN COMMAND")
+		mock.Expect("CLIENT", "SETINFO", "LIB-VER", LibVer).
+			ReplyError("UNKNOWN COMMAND")
+		mock.Expect("PING").ReplyString("OK")
+		mock.Close()
+	}
+	// Replica connection mock (includes READONLY command)
+	replicaMockServer := func(ln net.Listener) {
+		defer wg.Done()
+		mock, err := accept(t, ln)
+		if err != nil {
+			return
+		}
+		// Handle complete initialization sequence for replica
+		mock.Expect("HELLO", "3").
+			Reply(slicemsg(
+				'%',
+				[]ValkeyMessage{
+					strmsg('+', "version"),
+					strmsg('+', "6.0.0"),
+					strmsg('+', "proto"),
+					{typ: ':', intlen: 3},
+				},
+			))
+		mock.Expect("CLIENT", "TRACKING", "ON", "OPTIN").
+			ReplyString("OK")
+		mock.Expect("READONLY").
+			ReplyString("OK")
+		mock.Expect("CLIENT", "SETINFO", "LIB-NAME", LibName).
+			ReplyError("UNKNOWN COMMAND")
+		mock.Expect("CLIENT", "SETINFO", "LIB-VER", LibVer).
+			ReplyError("UNKNOWN COMMAND")
+		mock.Expect("PING").ReplyString("OK")
+		mock.Close()
+	}
+	wg.Add(2)
+	go primaryMockServer(pln)
+	go replicaMockServer(rln)
+
+	_, pport, _ := net.SplitHostPort(pln.Addr().String())
+	_, rport, _ := net.SplitHostPort(rln.Addr().String())
+	client, err := NewClient(ClientOption{
+		InitAddress: []string{"127.0.0.1:" + pport},
+		Standalone: StandaloneOption{
+			ReplicaAddress: []string{"127.0.0.1:" + rport},
+		},
+		SendToReplicas: func(cmd Completed) bool {
+			return cmd.IsReadOnly()
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := client.(*standalone); !ok {
+		t.Fatal("client should be a standalone")
+	}
+	client.Close()
+	wg.Wait()
 }
 
 func TestTLSClient(t *testing.T) {

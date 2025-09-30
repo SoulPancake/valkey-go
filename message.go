@@ -591,10 +591,6 @@ func (m *ValkeyMessage) values() []ValkeyMessage {
 	if m.array == nil {
 		return nil
 	}
-	// Add safety check to prevent corrupted memory access
-	if m.intlen < 0 || m.intlen > 1000000 { // reasonable upper bound
-		return nil
-	}
 	return unsafe.Slice(m.array, m.intlen)
 }
 
